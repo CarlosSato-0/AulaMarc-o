@@ -1,137 +1,69 @@
-import datetime
-from typing import Dict
-import bcrypt
-import jwt
-from fastapi import FastAPI, HTTPException, status, Depends
-from fastapi.security import OAuth2PasswordBearer
-from pydantic import BaseModel, EmailStr
+import hashlib
 
-app = FastAPI(title="SafeAuth API", version="1.0.0")
+# FUNCIONALIDADE: Recuperação de senha em desenvolvimento...
 
-# CONFIGURAÇÕES DE SEGURANÇA (Em produção, use variáveis de ambiente)
-SECRET_KEY = "sua_chave_secreta_super_segura_e_longa_aqui"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
-
-# Simulação de um banco de dados em memória
-# ATENÇÃO: Nunca guardamos senhas em texto plano, apenas o hash gerado pelo bcrypt
-db_usuarios: Dict[str, dict] = {}
-
-# Define de onde o FastAPI vai extrair o token nas rotas protegidas
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+# Nosso "banco de dados" temporário (um dicionário simples)
+# Ele vai guardar o formato: {"usuario": "senha_criptografada"}
+banco_usuarios = {}
 
 
-# ---- SCHEMAS DE DADOS (Pydantic) ----
-class UsuarioRegistro(BaseModel):
-    email: EmailStr
-    password: str
+def criptografar_senha(senha):
+    """Transforma a senha em texto plano em um hash SHA-256 seguro."""
+    return hashlib.sha256(senha.encode("utf-8")).hexdigest()
 
 
-class UsuarioLogin(BaseModel):
-    email: EmailStr
-    password: str
+def cadastrar():
+    print("\n--- TELA DE CADASTRO ---")
+    usuario = input("Digite um nome de usuário: ").strip().lower()
+
+    if usuario in banco_usuarios:
+        print("❌ Erro: Este usuário já existe!")
+        return
+
+    senha = input("Digite sua senha: ")
+
+    # ---- NOVA VALIDAÇÃO (RESOLVENDO A ISSUE #1) ----
+    if len(senha) < 8:
+        print("❌ Erro de Segurança: A senha deve ter pelo menos 8 caracteres!")
+        return
+    # -------------------------------------------------
+
+    banco_usuarios[usuario] = criptografar_senha(senha)
+    print("✅ Usuário cadastrado com sucesso de forma segura!")
 
 
-# ---- FUNÇÕES AUXILIARES DE SEGURANÇA ----
-def gerar_hash_senha(senha: str) -> str:
-    """Gera um hash seguro usando bcrypt (com salting automático)."""
-    bytes_senha = senha.encode("utf-8")
-    sal = bcrypt.gensalt(rounds=12)  # 12 rounds é um bom equilíbrio entre segurança e performance
-    hash_bytes = bcrypt.hashpw(bytes_senha, sal)
-    return hash_bytes.decode("utf-8")
+def login():
+    print("\n--- TELA DE LOGIN ---")
+    usuario = input("Usuário: ").strip().lower()
+    senha = input("Senha: ")
+
+    # Buscamos o hash da senha que está salvo no sistema
+    senha_salva_hash = banco_usuarios.get(usuario)
+
+    # Criptografamos a senha que o usuário digitou agora para comparar os hashes
+    if senha_salva_hash and senha_salva_hash == criptografar_senha(senha):
+        print(f"🔓 Acesso liberado! Bem-vindo, {usuario}.")
+    else:
+        print("❌ Erro: Usuário ou senha incorretos.")
 
 
-def verificar_senha(senha_plana: str, senha_hash: str) -> bool:
-    """Verifica se a senha digitada corresponde ao hash salvo."""
-    return bcrypt.checkpw(senha_plana.encode("utf-8"), senha_hash.encode("utf-8"))
+# Sistema Principal (Menu em Loop)
+while True:
+    print("\n=========================")
+    print("      SAFE LOGIN MENU    ")
+    print("=========================")
+    print("1. Cadastrar Novo Usuário")
+    print("2. Fazer Login")
+    print("3. Sair")
 
+    opcao = input("Escolha uma opção (1/2/3): ").strip()
 
-def criar_token_acesso(dados: dict) -> str:
-    """Gera um token JWT com tempo de expiração."""
-    dados_para_codificar = dados.copy()
-    tempo_expiracao = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
-        minutes=ACCESS_TOKEN_EXPIRE_MINUTES
-    )
-    dados_para_codificar.update({"exp": tempo_expiracao})
-    token_jwt = jwt.encode(dados_para_codificar, SECRET_KEY, algorithm=ALGORITHM)
-    return token_jwt
-
-
-def obter_usuario_atual(token: str = Depends(oauth2_scheme)) -> str:
-    """Dependência para proteger rotas. Valida o JWT e extrai o usuário."""
-    excecao_credenciais = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Token inválido ou expirado.",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        email: str = payload.get("sub")
-        if email is None:
-            raise excecao_credenciais
-        return email
-    except jwt.PyJWTError:
-        raise excecao_credenciais
-
-
-# ---- ROTAS (ENDPOINTS) ----
-
-
-@app.post("/register", status_code=status.HTTP_201_CREATED)
-def registrar_usuario(usuario: UsuarioRegistro):
-    """Rota para cadastrar um novo usuário com senha criptografada."""
-    if usuario.email in db_usuarios:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="E-mail já cadastrado."
-        )
-
-    # Criptografa a senha antes de salvar
-    senha_criptografada = gerar_hash_senha(usuario.password)
-
-    db_usuarios[usuario.email] = {
-        "email": usuario.email,
-        "password_hash": senha_criptografada,
-    }
-
-    return {"message": "Usuário registrado com sucesso seguro!"}
-
-
-@app.post("/login")
-def login(usuario: UsuarioLogin):
-    """Rota de autenticação que retorna o Bearer Token se as credenciais forem válidas."""
-    usuario_encontrado = db_usuarios.get(usuario.email)
-
-    # Mensagem genérica de erro para evitar enumeração de usuários (boa prática de segurança)
-    erro_autenticacao = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="E-mail ou senha incorretos.",
-    )
-
-    if not usuario_encontrado:
-        raise erro_autenticacao
-
-    # Verifica se a senha bate com o hash
-    if not verificar_senha(usuario.password, usuario_encontrado["password_hash"]):
-        raise erro_autenticacao
-
-    # Se estiver tudo certo, gera o token JWT
-    token_acesso = criar_token_acesso(dados={"sub": usuario.email})
-
-    return {"access_token": token_acesso, "token_type": "bearer"}
-
-
-@app.get("/me")
-def ler_dados_protegidos(email_usuario_atual: str = Depends(obter_usuario_atual)):
-    """Rota protegida que só pode ser acessada por usuários autenticados com um token válido."""
-    return {
-        "mensagem": "Você acessou uma área segura!",
-        "usuario_autenticado": email_usuario_atual,
-    }
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(app, host="127.0.0.1", port=8000)
-
-    
+    if opcao == "1":
+        cadastrar()
+    elif opcao == "2":
+        login()
+    elif opcao == "3":
+        print("Saindo do sistema... Até logo!")
+        break
+    else:
+        print("Opção inválida! Tente novamente.")
